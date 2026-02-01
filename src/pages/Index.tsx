@@ -4,6 +4,7 @@ import { FileUpload } from '@/components/FileUpload';
 import { PrintSettings } from '@/components/PrintSettings';
 import { PrintJobCard } from '@/components/PrintJobCard';
 import { PreviewModal } from '@/components/PreviewModal';
+import { LoginScreen } from '@/components/LoginScreen';
 import { usePrintJobs } from '@/hooks/usePrintJobs';
 import { DEFAULT_PRINT_SETTINGS } from '@/types/printJob';
 import type { PrintSettings as PrintSettingsType, PrintJob } from '@/types/printJob';
@@ -11,11 +12,23 @@ import { Loader2, FileText } from 'lucide-react';
 import { toast } from 'sonner';
 
 const Index = () => {
-  const { jobs, loading, creating, createJob, clearJobs } = usePrintJobs();
+  const { jobs, loading, creating, createJob, clearJobs, user, authLoading } = usePrintJobs();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [printSettings, setPrintSettings] = useState<PrintSettingsType>(DEFAULT_PRINT_SETTINGS);
   const [previewJob, setPreviewJob] = useState<PrintJob | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginScreen />;
+  }
 
   const handleFileSelect = (file: File) => {
     setSelectedFile(file);
