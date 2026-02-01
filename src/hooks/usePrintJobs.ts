@@ -99,11 +99,28 @@ export function usePrintJobs() {
     }
   };
 
+  const clearJobs = useCallback(async () => {
+    try {
+      const { error } = await supabase
+        .from('print_jobs')
+        .delete()
+        .eq('session_id', sessionId);
+      
+      if (error) throw error;
+      
+      setJobs([]);
+    } catch (err) {
+      console.error('Error clearing jobs:', err);
+      toast.error('Failed to clear history');
+    }
+  }, [sessionId]);
+
   return {
     jobs,
     loading,
     creating,
     createJob,
     refreshJobs: fetchJobs,
+    clearJobs,
   };
 }

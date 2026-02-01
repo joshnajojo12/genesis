@@ -1,6 +1,11 @@
-import { Shield, Printer } from 'lucide-react';
+import { Shield, Printer, RotateCcw } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
-export function Header() {
+interface HeaderProps {
+  onRefresh?: () => void;
+}
+
+export function Header({ onRefresh }: HeaderProps) {
   return (
     <header className="border-b bg-card">
       <div className="container mx-auto px-4 h-16 flex items-center justify-between">
@@ -14,9 +19,21 @@ export function Header() {
           </div>
         </div>
         
-        <div className="flex items-center gap-2 text-muted-foreground text-sm">
-          <Shield className="w-4 h-4" />
-          <span>Secure • One-Time • Protected</span>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 text-muted-foreground text-sm">
+            <Shield className="w-4 h-4" />
+            <span>Secure • One-Time • Protected</span>
+          </div>
+          {onRefresh && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onRefresh}
+              title="Clear history and refresh"
+            >
+              <RotateCcw className="w-4 h-4" />
+            </Button>
+          )}
         </div>
       </div>
     </header>

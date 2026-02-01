@@ -12,6 +12,8 @@ import { cn } from '@/lib/utils';
 interface PrintJobInfo {
   id: string;
   file_name: string;
+  file_path?: string;
+  file_type?: string;
   copies: number;
   color_mode: 'color' | 'bw';
   paper_size: string;
@@ -58,10 +60,51 @@ export default function PrintPage() {
   const [verifying, setVerifying] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [printSuccess, setPrintSuccess] = useState(false);
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
   useEffect(() => {
     fetchJob();
   }, [token]);
+
+  // Fetch a preview image (blurred on-page) for image file types
+  useEffect(() => {
+    let mounted = true;
+    let objectUrl: string | null = null;
+
+    const fetchPreview = async () => {
+      setPreviewSrc(null);
+      if (!job || !job.file_path || !job.file_type?.startsWith('image/')) return;
+
+      try {
+        const { data: fileData, error: downloadError } = await supabase.storage
+          .from('print-files')
+          .download(job.file_path);
+
+        if (downloadError || !fileData) return;
+
+        // Some SDKs return a Blob-like object; ensure we create a usable URL
+        let blob: Blob;
+        try {
+          blob = await (fileData as any).blob();
+        } catch (e) {
+          const arrayBuffer = await (fileData as any).arrayBuffer();
+          blob = new Blob([new Uint8Array(arrayBuffer)], { type: job.file_type });
+        }
+
+        objectUrl = URL.createObjectURL(blob);
+        if (mounted) setPreviewSrc(objectUrl);
+      } catch (err) {
+        console.warn('Failed to fetch preview image:', err);
+      }
+    };
+
+    fetchPreview();
+
+    return () => {
+      mounted = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [job]);
 
   const fetchJob = async () => {
     if (!token) {
@@ -73,7 +116,7 @@ export default function PrintPage() {
     try {
       const { data, error: fetchError } = await supabase
         .from('print_jobs')
-        .select('id, file_name, copies, color_mode, paper_size, orientation, status, expires_at, otp_attempts, max_otp_attempts')
+        .select('id, file_name, file_path, file_type, copies, color_mode, paper_size, orientation, status, expires_at, otp_attempts, max_otp_attempts')
         .eq('access_token', token)
         .single();
 
@@ -103,6 +146,82 @@ export default function PrintPage() {
       return;
     }
 
+    // Open print window early (synchronously, before async ops) to bypass popup blockers
+    const printWindow = window.open('', '_blank', 'width=800,height=600');
+    if (!printWindow) {
+      toast.error('Popup blocker detected. Please allow popups for this site.');
+      return;
+    }
+
+    // Immediately write a blurred placeholder so the popup isn't blank.
+    const immediatePlaceholder = `<!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>Preparing Secure Print</title>
+        <style>
+          html,body{height:100%;margin:0;background:#f7f7f7;font-family:Inter, Arial, sans-serif;color:#222}
+          .wrap{height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:18px;padding:24px;box-sizing:border-box}
+          .img-wrap{position:relative;max-width:920px;width:100%;max-height:78vh;display:flex;align-items:center;justify-content:center}
+          #preview-img{max-width:100%;max-height:100%;object-fit:contain;filter:blur(12px);-webkit-filter:blur(12px);background:linear-gradient(135deg,#eee,#ddd);}
+          .veil{position:absolute;inset:0;background:rgba(255,255,255,0.6);backdrop-filter:blur(2px)}
+          .note{font-size:14px;color:#444}
+          .spinner{width:44px;height:44px;border-radius:50%;border:6px solid rgba(0,0,0,0.08);border-top-color:#111;animation:spin 1s linear infinite}
+          @keyframes spin{to{transform:rotate(360deg)}}
+        </style>
+      </head>
+      <body>
+        <div class="wrap">
+          <div class="img-wrap">
+            <img id="preview-img" src="" alt="Preview" />
+            <div class="veil"></div>
+          </div>
+          <div class="spinner" aria-hidden="true"></div>
+          <div class="note">Preparing secure print — content is blurred for privacy.</div>
+        </div>
+      </body>
+      </html>`;
+
+    try {
+      printWindow.document.open();
+      printWindow.document.write(immediatePlaceholder);
+      printWindow.document.close();
+      printWindow.focus();
+    } catch (err) {
+      console.warn('Could not write immediate placeholder to print window:', err);
+    }
+
+    // Then try to fetch the actual image and replace the placeholder's src.
+    (async () => {
+      try {
+        if (job?.file_path && job.file_type && job.file_type.startsWith('image/')) {
+          const { data: previewData, error: previewError } = await supabase.storage
+            .from('print-files')
+            .download(job.file_path);
+
+          if (!previewError && previewData) {
+            const arrayBuffer = await previewData.arrayBuffer();
+            const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+            const mime = job.file_type.toLowerCase().includes('png') ? 'image/png' : job.file_type;
+
+            try {
+              // If window is still open, set the img src to the base64 data URL
+              if (!printWindow.closed) {
+                const img = printWindow.document.getElementById('preview-img') as HTMLImageElement | null;
+                if (img) {
+                  img.src = `data:${mime};base64,${base64}`;
+                }
+              }
+            } catch (err) {
+              console.warn('Could not update preview image in print window:', err);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Could not populate blurred preview:', err);
+      }
+    })();
+
     setVerifying(true);
 
     try {
@@ -117,7 +236,8 @@ export default function PrintPage() {
 
       if (!result.success) {
         toast.error(result.error || 'Verification failed');
-        
+        printWindow.close();
+
         if (result.error?.includes('locked') || result.error?.includes('Too many')) {
           setJob(prev => prev ? { ...prev, status: 'locked' } : null);
         } else if (result.attempts_remaining !== undefined) {
@@ -133,13 +253,13 @@ export default function PrintPage() {
       // Success! Trigger print
       setPrinting(true);
       toast.success('OTP verified! Preparing print...');
-      
-      // Call edge function to get print stream
-      await triggerPrint(result.file_path!, job.copies, job.color_mode, job.paper_size, job.orientation);
-      
+
+      // Call edge function to get print stream, passing the already-opened window
+      await triggerPrint(result.file_path!, job.copies, job.color_mode, job.paper_size, job.orientation, printWindow);
+
       setPrintSuccess(true);
       setJob(prev => prev ? { ...prev, status: 'printed' } : null);
-      
+
     } catch (err) {
       console.error('Verification error:', err);
       toast.error('Verification failed. Please try again.');
@@ -154,55 +274,135 @@ export default function PrintPage() {
     copies: number,
     colorMode: string,
     paperSize: string,
-    orientation: string
+    orientation: string,
+    printWindow: Window
   ) => {
     try {
-      // Call edge function to get the print-ready stream
+      const payload = {
+        filePath,
+        copies,
+        colorMode,
+        paperSize,
+        orientation,
+        jobId: job?.id,
+      };
+
+      console.debug('Invoking Edge Function `print-stream` with payload:', payload);
+
+      // Call edge function to get the print-ready stream. Ensure JSON body and header.
       const response = await supabase.functions.invoke('print-stream', {
-        body: {
-          filePath,
-          copies,
-          colorMode,
-          paperSize,
-          orientation,
-          jobId: job?.id,
-        },
+        body: JSON.stringify(payload),
+        headers: { 'Content-Type': 'application/json' },
       });
 
-      if (response.error) throw response.error;
+      // Log full response for easier debugging in prod
+      console.debug('Edge Function response:', response);
 
-      // The response should contain the print-ready HTML/image
-      const printContent = response.data;
-      
-      // Create hidden iframe and trigger print
-      const printFrame = document.createElement('iframe');
-      printFrame.style.position = 'fixed';
-      printFrame.style.right = '0';
-      printFrame.style.bottom = '0';
-      printFrame.style.width = '0';
-      printFrame.style.height = '0';
-      printFrame.style.border = 'none';
-      document.body.appendChild(printFrame);
-
-      const frameDoc = printFrame.contentWindow?.document;
-      if (frameDoc) {
-        frameDoc.open();
-        frameDoc.write(printContent.html);
-        frameDoc.close();
-
-        // Wait for content to load, then print
-        printFrame.onload = () => {
-          setTimeout(() => {
-            printFrame.contentWindow?.print();
-            // Clean up after print dialog
-            setTimeout(() => {
-              document.body.removeChild(printFrame);
-            }, 1000);
-          }, 500);
-        };
+      if (response.error) {
+        // Provide extra info when possible
+        console.error('Edge Function returned error object:', response.error);
+        throw response.error;
       }
-    } catch (err) {
+
+      // The response.data may be a JSON string or an object depending on supabase client
+      let printContent: any = response.data;
+      if (typeof printContent === 'string') {
+        try {
+          printContent = JSON.parse(printContent);
+        } catch (e) {
+          // If it's not JSON, keep it as string (older SDKs may return raw text)
+        }
+      }
+
+      // Determine HTML string from response (handle object or raw string)
+      let htmlString = '';
+      if (printContent && typeof printContent === 'object' && typeof printContent.html === 'string') {
+        htmlString = printContent.html;
+      } else if (typeof printContent === 'string') {
+        htmlString = printContent;
+      } else if ((response as any)?.data && typeof (response as any).data === 'string') {
+        htmlString = (response as any).data;
+      }
+
+      if (!htmlString) {
+        throw new Error('Empty print content received from function');
+      }
+
+      // Write HTML to the already-opened print window and trigger print
+      try {
+        // Clear the window first
+        printWindow.document.write('<html><head><title>Print</title></head><body></body></html>');
+        printWindow.document.close();
+
+        // Use innerHTML to set the content - more reliable than document.write for dynamic content
+        const htmlWithoutDoctype = htmlString.replace(/^<!DOCTYPE[^>]*>\s*/i, '').replace(/<html[^>]*>/i, '').replace(/<\/html>/i, '').replace(/<head[^>]*>/i, '').replace(/<\/head>/i, '').replace(/<body[^>]*>/i, '').replace(/<\/body>/i, '');
+        
+        // Extract and apply styles from original HTML
+        const styleMatch = htmlString.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+        let styleContent = '';
+        if (styleMatch && styleMatch[1]) {
+          styleContent = styleMatch[1];
+        }
+
+        // Create complete document with styles and content
+        const completeHtml = `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Print Document</title>
+            <style>
+              ${styleContent}
+            </style>
+          </head>
+          <body>
+            ${htmlWithoutDoctype}
+          </body>
+          </html>
+        `;
+
+        // Replace document content
+        printWindow.document.open();
+        printWindow.document.write(completeHtml);
+        printWindow.document.close();
+        printWindow.focus();
+
+        // Trigger print after content loads
+        let printTriggered = false;
+
+        const triggerPrintDialog = () => {
+          if (printTriggered) return;
+          printTriggered = true;
+
+          try {
+            // This triggers the browser print dialog for the window
+            printWindow.print();
+            toast.success('Print dialog opened');
+          } catch (e) {
+            console.error('Print invocation error:', e);
+            toast.error('Failed to open print dialog. Please try again.');
+          }
+
+          // Close the window after giving user time to interact with print dialog
+          setTimeout(() => {
+            try { printWindow.close(); } catch (e) { /* ignore */ }
+          }, 5000);
+        };
+
+        // Wait for content to load
+        setTimeout(triggerPrintDialog, 1000);
+
+      } catch (e) {
+        console.error('Failed to populate/print window:', e);
+        toast.error('Failed to prepare print content. Please try again.');
+        throw e;
+      }
+    } catch (err: any) {
+      // Surface useful diagnostics in console for production debugging
       console.error('Print error:', err);
+      if (err && err.status) console.error('Function status:', err.status);
+      if (err && err.message) console.error('Function message:', err.message);
+      if (err && err.body) console.error('Function body:', err.body);
       toast.error('Failed to initiate print. Please contact support.');
     }
   };
@@ -294,6 +494,23 @@ export default function PrintPage() {
                 </div>
               </div>
             </div>
+
+            {/* Blurred Preview (for image files) */}
+            {previewSrc && (
+              <div className="w-full mt-2">
+                <div className="relative rounded-lg overflow-hidden border bg-black/5">
+                  <img
+                    src={previewSrc}
+                    alt="Preview"
+                    className="w-full max-h-72 object-contain filter blur-md"
+                    style={{ WebkitFilter: 'blur(8px)' }}
+                  />
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="bg-black/30 text-white text-sm px-3 py-1 rounded">Preview blurred for privacy</div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Time Remaining */}
             {canPrint && (
@@ -411,7 +628,7 @@ export default function PrintPage() {
             <div className="flex items-start gap-2 text-xs text-muted-foreground">
               <Shield className="w-4 h-4 flex-shrink-0 mt-0.5" />
               <p>
-                This is a secure one-time print. The document cannot be downloaded, previewed, or saved. 
+                This is a secure one-time print. The document cannot be downloaded, previewed, or saved.
                 Print output includes watermarks for security tracking.
               </p>
             </div>

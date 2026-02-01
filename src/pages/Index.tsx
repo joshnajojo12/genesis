@@ -8,9 +8,10 @@ import { usePrintJobs } from '@/hooks/usePrintJobs';
 import { DEFAULT_PRINT_SETTINGS } from '@/types/printJob';
 import type { PrintSettings as PrintSettingsType, PrintJob } from '@/types/printJob';
 import { Loader2, FileText } from 'lucide-react';
+import { toast } from 'sonner';
 
 const Index = () => {
-  const { jobs, loading, creating, createJob } = usePrintJobs();
+  const { jobs, loading, creating, createJob, clearJobs } = usePrintJobs();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [printSettings, setPrintSettings] = useState<PrintSettingsType>(DEFAULT_PRINT_SETTINGS);
   const [previewJob, setPreviewJob] = useState<PrintJob | null>(null);
@@ -37,9 +38,15 @@ const Index = () => {
     setSelectedFile(null);
   };
 
+  const handleRefresh = async () => {
+    await clearJobs();
+    setSelectedFile(null);
+    toast.success('History cleared');
+  };
+
   return (
     <div className="min-h-screen bg-background">
-      <Header />
+      <Header onRefresh={handleRefresh} />
       
       <main className="container mx-auto px-4 py-8 max-w-4xl">
         {/* Upload Section */}

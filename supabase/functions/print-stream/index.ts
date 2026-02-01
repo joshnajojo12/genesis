@@ -25,7 +25,7 @@ serve(async (req) => {
     // Create Supabase client with service role for storage access
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    
+
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Verify the job is actually marked as printed (security check)
@@ -73,13 +73,13 @@ serve(async (req) => {
 
     // Generate print-ready HTML with embedded content
     let contentHtml = '';
-    
+
     if (isImage) {
       // Convert blob to base64
       const arrayBuffer = await fileData.arrayBuffer();
       const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
       const mimeType = filePath.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
-      
+
       contentHtml = `
         <div class="page">
           <img src="data:${mimeType};base64,${base64}" alt="Print content" />
@@ -87,13 +87,13 @@ serve(async (req) => {
         </div>
       `;
     } else if (isPDF) {
-      // For PDF, we embed it directly
+      // For PDF, we use iframe for better browser compatibility
       const arrayBuffer = await fileData.arrayBuffer();
       const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-      
+
       contentHtml = `
         <div class="page pdf-page">
-          <embed src="data:application/pdf;base64,${base64}" type="application/pdf" width="100%" height="100%" />
+          <iframe src="data:application/pdf;base64,${base64}" type="application/pdf" width="100%" height="100%" frameborder="0"></iframe>
           <div class="watermark">${watermarkText}</div>
         </div>
       `;
@@ -170,9 +170,10 @@ serve(async (req) => {
       height: 100vh;
     }
     
-    .pdf-page embed {
+    .pdf-page iframe {
       width: 100%;
       height: 100%;
+      border: none;
     }
     
     .page img {
@@ -212,10 +213,8 @@ serve(async (req) => {
 <body oncontextmenu="return false;" ondragstart="return false;">
   ${copiesHtml}
   <script>
-    // Auto-trigger print
-    window.onload = function() {
-      window.print();
-    };
+    // Don't auto-print to avoid conflicts with client-side trigger
+    // The client will call window.print() when ready
     
     // Prevent keyboard shortcuts
     document.addEventListener('keydown', function(e) {
@@ -234,16 +233,16 @@ serve(async (req) => {
 
     return new Response(
       JSON.stringify({ html: printHtml }),
-      { 
-        status: 200, 
-        headers: { 
-          ...corsHeaders, 
+      {
+        status: 200,
+        headers: {
+          ...corsHeaders,
           'Content-Type': 'application/json',
           // Security headers
           'Cache-Control': 'no-store, no-cache, must-revalidate',
           'Pragma': 'no-cache',
           'Expires': '0',
-        } 
+        }
       }
     );
 
