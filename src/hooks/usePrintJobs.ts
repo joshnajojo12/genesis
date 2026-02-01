@@ -1,86 +1,19 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
-import { getSessionId, generateOTP, hashOTP } from '@/lib/session';
+import { getSessionId, generateOTP } from '@/lib/session';
 import type { PrintJob, PrintSettings } from '@/types/printJob';
 import { toast } from 'sonner';
-import { User } from '@supabase/supabase-js';
-
-const SESSION_KEY = 'print_session_id';
+import { useAuth } from '@/components/AuthProvider';
 
 export function usePrintJobs() {
   const [jobs, setJobs] = useState<PrintJob[]>([]);
   const [loading, setLoading] = useState(true);
-  const [authLoading, setAuthLoading] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [user, setUser] = useState<User | null>(null);
   
-  // Initialize session ID from local storage or create new one
-  const [sessionId, setSessionId] = useState<string>(getSessionId());
-
-  // Handle Authentication and Session Merging
-  useEffect(() => {
-    // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        setUser(session.user);
-        handleUserLogin(session.user.id);
-      }
-      setAuthLoading(false);
-    });
-
-    // Listen for auth changes
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session?.user) {
-        setUser(session.user);
-        await handleUserLogin(session.user.id);
-      } else {
-        setUser(null);
-        // If logging out, we might want to reset to a new anonymous session
-        // or keep the old one? Usually reset.
-        // But for now, let's just ensure we have A session.
-        const newAnonId = crypto.randomUUID();
-        localStorage.setItem(SESSION_KEY, newAnonId);
-        setSessionId(newAnonId);
-      }
-      setAuthLoading(false);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
-  const handleUserLogin = async (userId: string) => {
-    const currentLocalSession = localStorage.getItem(SESSION_KEY);
-    
-    // If we have an anonymous session and it's different from the user ID
-    if (currentLocalSession && currentLocalSession !== userId) {
-      // Merge logic: Update existing jobs from anonymous session to user ID
-      try {
-        const { error } = await supabase
-          .from('print_jobs')
-          .update({ session_id: userId })
-          .eq('session_id', currentLocalSession);
-
-        if (error) {
-          console.error('Error merging sessions:', error);
-        } else {
-          // If successful, or even if not, we switch to user ID
-          console.log('Merged anonymous session jobs to user account');
-        }
-      } catch (err) {
-        console.error('Error in merge process:', err);
-      }
-    }
-    
-    // Set the session to the user ID
-    localStorage.setItem(SESSION_KEY, userId);
-    setSessionId(userId);
-  };
+  const { user } = useAuth();
+  const sessionId = user ? user.id : getSessionId();
 
   const fetchJobs = useCallback(async () => {
-    if (!sessionId) return;
-
     try {
       const { data, error } = await supabase
         .from('print_jobs')
@@ -122,7 +55,13 @@ export function usePrintJobs() {
     try {
       // Generate OTP
       const otp = generateOTP();
-      const otpHash = await hashOTP(otp);
+      
+      // Use server-side hashing to ensure consistency and avoid crypto.subtle issues in non-secure contexts
+      const { data: otpHash, error: hashError } = await supabase.rpc('hash_otp', { otp_value: otp });
+      
+      if (hashError || !otpHash) {
+        throw new Error('Failed to generate secure OTP hash');
+      }
       
       // Upload file
       const fileExt = file.name.split('.').pop();
@@ -191,7 +130,5 @@ export function usePrintJobs() {
     createJob,
     refreshJobs: fetchJobs,
     clearJobs,
-    user,
-    authLoading,
   };
 }

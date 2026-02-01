@@ -4,7 +4,13 @@ const SESSION_KEY = 'print_session_id';
 export function getSessionId(): string {
   let sessionId = localStorage.getItem(SESSION_KEY);
   
-  if (!sessionId) {
+  // Validate if the session ID is a valid UUID
+  const isValidUUID = (id: string) => {
+    const regex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    return regex.test(id);
+  };
+
+  if (!sessionId || !isValidUUID(sessionId)) {
     sessionId = crypto.randomUUID();
     localStorage.setItem(SESSION_KEY, sessionId);
   }
@@ -17,11 +23,3 @@ export function generateOTP(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// Simple hash function for OTP (matches server-side)
-export async function hashOTP(otp: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(otp);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-}
